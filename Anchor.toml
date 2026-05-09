@@ -8,6 +8,9 @@ skip-lint = false
 [programs.localnet]
 remesa_liquidez = "Fprb6jTLfjXfZ6yuWzS7LVXxwVvPbPgPZiEqDEL9bRfj"
 
+[programs.devnet]
+remesa_liquidez = "Fprb6jTLfjXfZ6yuWzS7LVXxwVvPbPgPZiEqDEL9bRfj"
+
 [registry]
 url = "https://api.apr.dev"
 
