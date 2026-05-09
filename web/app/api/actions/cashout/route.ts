@@ -10,6 +10,8 @@ import {
   Connection,
   Keypair,
   PublicKey,
+  SystemProgram,
+  SYSVAR_RENT_PUBKEY,
   Transaction,
   VersionedTransaction,
   clusterApiUrl,
@@ -22,7 +24,12 @@ import {
 
 import idl from "@root/target/idl/remesa_liquidez.json";
 import type { RemesaLiquidez } from "@root/target/types/remesa_liquidez";
-import { findMerchantPda, findVaultPda } from "@root/client";
+import {
+  findMerchantPda,
+  findTreasuryAuthorityPda,
+  findTreasuryTokenAccountPda,
+  findVaultPda,
+} from "@root/client";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -276,6 +283,11 @@ export async function POST(req: Request) {
       merchant
     );
     const [vaultPda] = findVaultPda(program.programId, reservationPda);
+    const [treasuryAuthority] = findTreasuryAuthorityPda(program.programId);
+    const [treasuryTokenAccount] = findTreasuryTokenAccountPda(
+      program.programId,
+      reservation.mint
+    );
 
     const ix = await program.methods
       .validateCashout()
@@ -286,7 +298,11 @@ export async function POST(req: Request) {
         mint: reservation.mint,
         vault: vaultPda,
         merchantTokenAccount,
+        treasuryAuthority,
+        treasuryTokenAccount,
         tokenProgram: TOKEN_PROGRAM_ID,
+        systemProgram: SystemProgram.programId,
+        rent: SYSVAR_RENT_PUBKEY,
       })
       .instruction();
 
@@ -302,12 +318,16 @@ export async function POST(req: Request) {
 
     // Single-signer: the merchant is the sole required signature. World ID
     // verification was already recorded on-chain via `mark_verified` (gated
-    // above by `reservation.isVerified`).
+    // above by `reservation.isVerified`). The contract splits the amount:
+    // 99.75% goes to the merchant ATA, 0.25% to the protocol treasury PDA.
+    const gross = BigInt(reservation.amount.toString());
+    const fee = (gross * 25n) / 10000n;
+    const net = gross - fee;
     const payload: ActionPostResponse = await createPostResponse({
       fields: {
         type: "transaction",
         transaction: tx,
-        message: `Validar entrega de efectivo por ${reservation.amount.toString()} unidades al receptor verificado (World ID).`,
+        message: `Validar entrega de efectivo: recibirás ${net.toString()} (neto) y ${fee.toString()} se enviarán al tesoro del protocolo (0.25%).`,
       },
     });
 

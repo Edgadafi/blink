@@ -18,6 +18,8 @@ import { expect } from "chai";
 
 import { RemesaLiquidez } from "../target/types/remesa_liquidez";
 import {
+  BPS_DENOMINATOR,
+  FEE_BPS,
   buildCancelReservationIx,
   buildInitializeReservationIx,
   buildMarkVerifiedIx,
@@ -25,6 +27,7 @@ import {
   buildSetMerchantStatusIx,
   buildValidateCashoutIx,
   findReservationPda,
+  findTreasuryTokenAccountPda,
   findVaultPda,
 } from "../client";
 
@@ -111,10 +114,13 @@ describe("remesa-liquidez", () => {
     await provider.sendAndConfirm(new Transaction().add(ix), [s.sender]);
   }
 
-  it("happy path: mark_verified + merchant-only validate_cashout transfers tokens", async () => {
+  it("happy path: mark_verified + merchant-only validate_cashout splits fee 0.25% to treasury", async () => {
     const s = await setup();
     const amount = await initialize(s);
     await markVerified(s);
+
+    const expectedFee = Math.floor((amount * FEE_BPS) / BPS_DENOMINATOR);
+    const expectedNet = amount - expectedFee;
 
     const ix = await buildValidateCashoutIx({
       program,
@@ -127,13 +133,101 @@ describe("remesa-liquidez", () => {
     await provider.sendAndConfirm(tx, [s.merchant]);
 
     const merchantBal = await getAccount(connection, s.merchantAta);
-    expect(Number(merchantBal.amount)).to.equal(amount);
+    expect(Number(merchantBal.amount)).to.equal(expectedNet);
+
+    const [treasuryTokenAccount] = findTreasuryTokenAccountPda(
+      program.programId,
+      s.mint
+    );
+    const treasuryBal = await getAccount(connection, treasuryTokenAccount);
+    expect(Number(treasuryBal.amount)).to.equal(expectedFee);
+    expect(expectedFee).to.be.greaterThan(0);
 
     const [reservationPda] = findReservationPda(program.programId, s.receiver.publicKey);
     const reservation = await program.account.turnReservation.fetch(reservationPda);
     expect(JSON.stringify(reservation.status)).to.contain("completed");
     expect(reservation.merchant.toBase58()).to.equal(s.merchant.publicKey.toBase58());
     expect(reservation.isVerified).to.equal(true);
+  });
+
+  it("treasury vault accumulates fees across multiple cashouts (same mint)", async () => {
+    const a = await setup();
+    const aAmount = await initialize(a, 200_000_000);
+    await markVerified(a);
+
+    await provider.sendAndConfirm(
+      new Transaction().add(
+        await buildValidateCashoutIx({
+          program,
+          receiver: a.receiver.publicKey,
+          merchant: a.merchant.publicKey,
+          mint: a.mint,
+          merchantTokenAccount: a.merchantAta,
+        })
+      ),
+      [a.merchant]
+    );
+
+    const b = await setup({ mintMerchant: true });
+    // Reuse the same mint so the treasury vault is shared.
+    const bAmount = 400_000_000;
+    const senderAta2 = await getOrCreateAssociatedTokenAccount(
+      connection,
+      admin,
+      a.mint,
+      b.sender.publicKey
+    );
+    await mintTo(connection, admin, a.mint, senderAta2.address, admin, 1_000_000_000);
+    const merchantAta2 = await getOrCreateAssociatedTokenAccount(
+      connection,
+      admin,
+      a.mint,
+      b.merchant.publicKey
+    );
+
+    const initIx = await buildInitializeReservationIx({
+      program,
+      sender: b.sender.publicKey,
+      receiver: b.receiver.publicKey,
+      mint: a.mint,
+      senderTokenAccount: senderAta2.address,
+      amount: bAmount,
+      expirySeconds: 60,
+    });
+    await provider.sendAndConfirm(new Transaction().add(initIx), [b.sender]);
+    await provider.sendAndConfirm(
+      new Transaction().add(
+        await buildMarkVerifiedIx({
+          program,
+          sender: b.sender.publicKey,
+          receiver: b.receiver.publicKey,
+        })
+      ),
+      [b.sender]
+    );
+    await provider.sendAndConfirm(
+      new Transaction().add(
+        await buildValidateCashoutIx({
+          program,
+          receiver: b.receiver.publicKey,
+          merchant: b.merchant.publicKey,
+          mint: a.mint,
+          merchantTokenAccount: merchantAta2.address,
+        })
+      ),
+      [b.merchant]
+    );
+
+    const expectedTotalFee =
+      Math.floor((aAmount * FEE_BPS) / BPS_DENOMINATOR) +
+      Math.floor((bAmount * FEE_BPS) / BPS_DENOMINATOR);
+
+    const [treasuryTokenAccount] = findTreasuryTokenAccountPda(
+      program.programId,
+      a.mint
+    );
+    const treasuryBal = await getAccount(connection, treasuryTokenAccount);
+    expect(Number(treasuryBal.amount)).to.equal(expectedTotalFee);
   });
 
   it("ReceiverNotVerified: cashout fails if mark_verified was never called", async () => {

@@ -11,6 +11,12 @@ import { RemesaLiquidez } from "../target/types/remesa_liquidez";
 export const RESERVATION_SEED = Buffer.from("reservation");
 export const VAULT_SEED = Buffer.from("vault");
 export const MERCHANT_SEED = Buffer.from("merchant");
+export const TREASURY_AUTHORITY_SEED = Buffer.from("treasury");
+export const TREASURY_VAULT_SEED = Buffer.from("treasury_vault");
+
+/** Protocol fee in basis points charged on every successful validate_cashout. */
+export const FEE_BPS = 25;
+export const BPS_DENOMINATOR = 10_000;
 
 export type RemesaProgram = Program<RemesaLiquidez>;
 
@@ -40,6 +46,22 @@ export function findMerchantPda(
 ): [PublicKey, number] {
   return PublicKey.findProgramAddressSync(
     [MERCHANT_SEED, merchant.toBuffer()],
+    programId
+  );
+}
+
+export function findTreasuryAuthorityPda(
+  programId: PublicKey
+): [PublicKey, number] {
+  return PublicKey.findProgramAddressSync([TREASURY_AUTHORITY_SEED], programId);
+}
+
+export function findTreasuryTokenAccountPda(
+  programId: PublicKey,
+  mint: PublicKey
+): [PublicKey, number] {
+  return PublicKey.findProgramAddressSync(
+    [TREASURY_VAULT_SEED, mint.toBuffer()],
     programId
   );
 }
@@ -97,6 +119,11 @@ export async function buildValidateCashoutIx(
     args.program.programId,
     args.merchant
   );
+  const [treasuryAuthority] = findTreasuryAuthorityPda(args.program.programId);
+  const [treasuryTokenAccount] = findTreasuryTokenAccountPda(
+    args.program.programId,
+    args.mint
+  );
 
   return args.program.methods
     .validateCashout()
@@ -107,7 +134,11 @@ export async function buildValidateCashoutIx(
       mint: args.mint,
       vault,
       merchantTokenAccount: args.merchantTokenAccount,
+      treasuryAuthority,
+      treasuryTokenAccount,
       tokenProgram: TOKEN_PROGRAM_ID,
+      systemProgram: SystemProgram.programId,
+      rent: anchor.web3.SYSVAR_RENT_PUBKEY,
     })
     .instruction();
 }

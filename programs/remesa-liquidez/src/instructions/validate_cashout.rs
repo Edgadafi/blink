@@ -1,15 +1,16 @@
 use anchor_lang::prelude::*;
-use anchor_spl::token::{self, Token, TokenAccount, Transfer};
+use anchor_spl::token::{self, Mint, Token, TokenAccount, Transfer};
 
+use crate::constants::{
+    BPS_DENOMINATOR, FEE_BPS, TREASURY_AUTHORITY_SEED, TREASURY_VAULT_SEED,
+};
 use crate::errors::ErrorCode;
 use crate::state::{MerchantAccount, ReservationStatus, TurnReservation};
 
 #[derive(Accounts)]
 pub struct ValidateCashout<'info> {
-    /// Merchant providing physical liquidity. Sole signer of the cash-out.
-    /// The receiver no longer signs at the point of sale; off-chain World ID
-    /// verification was already recorded via `mark_verified` and is enforced
-    /// by the `is_verified` flag on the reservation.
+    /// Merchant providing physical liquidity. Sole signer of the cash-out and
+    /// payer for the lazy treasury init (cheap rent on first use per mint).
     #[account(mut)]
     pub merchant: Signer<'info>,
 
@@ -26,10 +27,10 @@ pub struct ValidateCashout<'info> {
         bump = reservation.bump,
         has_one = mint @ ErrorCode::MintMismatch,
     )]
-    pub reservation: Account<'info, TurnReservation>,
+    pub reservation: Box<Account<'info, TurnReservation>>,
 
-    /// CHECK: validated via the `has_one = mint` constraint on `reservation`.
-    pub mint: UncheckedAccount<'info>,
+    /// SPL mint backing the reservation.
+    pub mint: Box<Account<'info, Mint>>,
 
     #[account(
         mut,
@@ -37,16 +38,59 @@ pub struct ValidateCashout<'info> {
         bump = reservation.vault_bump,
         constraint = vault.mint == reservation.mint @ ErrorCode::MintMismatch,
     )]
-    pub vault: Account<'info, TokenAccount>,
+    pub vault: Box<Account<'info, TokenAccount>>,
 
     #[account(
         mut,
         constraint = merchant_token_account.owner == merchant.key(),
         constraint = merchant_token_account.mint == reservation.mint @ ErrorCode::MintMismatch,
     )]
-    pub merchant_token_account: Account<'info, TokenAccount>,
+    pub merchant_token_account: Box<Account<'info, TokenAccount>>,
+
+    /// Treasury authority PDA. Owns every per-mint treasury vault. Validated
+    /// by seeds; never signs from this instruction (only fees flow in).
+    /// CHECK: PDA validated by seeds.
+    #[account(
+        seeds = [TREASURY_AUTHORITY_SEED],
+        bump,
+    )]
+    pub treasury_authority: UncheckedAccount<'info>,
+
+    /// Per-mint treasury token account. Initialized lazily on the first
+    /// `validate_cashout` for the given mint (merchant pays the rent).
+    #[account(
+        init_if_needed,
+        payer = merchant,
+        seeds = [TREASURY_VAULT_SEED, mint.key().as_ref()],
+        bump,
+        token::mint = mint,
+        token::authority = treasury_authority,
+    )]
+    pub treasury_token_account: Box<Account<'info, TokenAccount>>,
 
     pub token_program: Program<'info, Token>,
+    pub system_program: Program<'info, System>,
+    pub rent: Sysvar<'info, Rent>,
+}
+
+impl<'info> ValidateCashout<'info> {
+    fn into_transfer_to_merchant_context(&self) -> CpiContext<'_, '_, '_, 'info, Transfer<'info>> {
+        let cpi_accounts = Transfer {
+            from: self.vault.to_account_info(),
+            to: self.merchant_token_account.to_account_info(),
+            authority: self.reservation.to_account_info(),
+        };
+        CpiContext::new(self.token_program.to_account_info(), cpi_accounts)
+    }
+
+    fn into_transfer_to_treasury_context(&self) -> CpiContext<'_, '_, '_, 'info, Transfer<'info>> {
+        let cpi_accounts = Transfer {
+            from: self.vault.to_account_info(),
+            to: self.treasury_token_account.to_account_info(),
+            authority: self.reservation.to_account_info(),
+        };
+        CpiContext::new(self.token_program.to_account_info(), cpi_accounts)
+    }
 }
 
 pub fn handler(ctx: Context<ValidateCashout>) -> Result<()> {
@@ -78,37 +122,52 @@ pub fn handler(ctx: Context<ValidateCashout>) -> Result<()> {
         }
     }
 
-    let amount = ctx.accounts.reservation.amount;
+    let total_amount = ctx.accounts.reservation.amount;
+    let fee_amount = total_amount
+        .checked_mul(FEE_BPS)
+        .and_then(|v| v.checked_div(BPS_DENOMINATOR))
+        .ok_or(ErrorCode::NumericOverflow)?;
+    let merchant_amount = total_amount
+        .checked_sub(fee_amount)
+        .ok_or(ErrorCode::NumericOverflow)?;
+
     let receiver_key = ctx.accounts.reservation.receiver;
     let reservation_bump = ctx.accounts.reservation.bump;
-
     let signer_seeds: &[&[&[u8]]] = &[&[
         TurnReservation::SEED_PREFIX,
         receiver_key.as_ref(),
         std::slice::from_ref(&reservation_bump),
     ]];
 
-    let cpi_accounts = Transfer {
-        from: ctx.accounts.vault.to_account_info(),
-        to: ctx.accounts.merchant_token_account.to_account_info(),
-        authority: ctx.accounts.reservation.to_account_info(),
-    };
-    let cpi_ctx = CpiContext::new_with_signer(
-        ctx.accounts.token_program.to_account_info(),
-        cpi_accounts,
-        signer_seeds,
-    );
-    token::transfer(cpi_ctx, amount)?;
+    if merchant_amount > 0 {
+        token::transfer(
+            ctx.accounts
+                .into_transfer_to_merchant_context()
+                .with_signer(signer_seeds),
+            merchant_amount,
+        )?;
+    }
+
+    if fee_amount > 0 {
+        token::transfer(
+            ctx.accounts
+                .into_transfer_to_treasury_context()
+                .with_signer(signer_seeds),
+            fee_amount,
+        )?;
+    }
 
     let reservation = &mut ctx.accounts.reservation;
     reservation.merchant = ctx.accounts.merchant.key();
     reservation.status = ReservationStatus::Completed;
 
     msg!(
-        "Cashout validated: receiver={}, merchant={}, amount={}",
+        "Cashout settled: receiver={}, merchant={}, gross={}, fee={}, net={}",
         reservation.receiver,
         reservation.merchant,
-        amount
+        total_amount,
+        fee_amount,
+        merchant_amount
     );
 
     Ok(())
