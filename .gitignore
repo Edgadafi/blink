@@ -5,3 +5,4 @@ target
 node_modules
 test-ledger
 .yarn
+scripts/.merchants-demo-devnet.json

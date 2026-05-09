@@ -39,35 +39,35 @@ solana program close --buffers --keypair ~/.config/solana/id.json
 
 ### 3. Bootstrap protocol Config (one-shot)
 
-The `Config` PDA must exist before anyone can call `withdraw_treasury`.
-
 ```bash
-cd web
-npx ts-node --esm -e "
-import * as anchor from '@coral-xyz/anchor';
-import { Connection, Transaction, clusterApiUrl } from '@solana/web3.js';
-import { buildInitializeConfigIx } from '../client';
-import { getProgram, getConnection } from './lib/anchor';
-const wallet = anchor.AnchorProvider.env().wallet as anchor.Wallet;
-const conn = getConnection();
-const program = getProgram(conn);
-const ix = await buildInitializeConfigIx({ program, admin: wallet.publicKey });
-const sig = await anchor.AnchorProvider.env().sendAndConfirm(new Transaction().add(ix));
-console.log('Config initialized:', sig);
-"
+anchor migrate --provider.cluster devnet
 ```
 
-Or, more conservatively, add a `scripts/init-config.ts` to the repo that the
-team runs once at deploy time.
+This runs [`migrations/deploy.ts`](migrations/deploy.ts): idempotent `initialize_config`
+(first deploy only).
 
-### 4. Whitelist merchants
+### 4. Whitelist merchants (admin payer)
 
-Each merchant pubkey must be registered before they can settle cashouts:
+Every merchant pubkey that will sign `validate_cashout` / Blinks **must** be
+registered via `register_merchant`.
+
+**Explicit pubkeys (e.g. wallets de Phantom ya creados):**
 
 ```bash
-# pseudocode — wire this into a small CLI or a Web admin UI
-buildRegisterMerchantIx({ program, admin, merchant })
+SOLANA_RPC_URL=https://api.devnet.solana.com \
+MERCHANT_PUBKEYS='Pubkey1Base58,Pubkey2Base58' \
+yarn register-merchants:devnet
 ```
+
+**Demo (genera 3 keypairs nuevas):** sin `MERCHANT_PUBKEYS` el script escribe los
+secrets en `scripts/.merchants-demo-devnet.json` (gitignored) y registra esas 3 pubkeys
+on-chain. Luego `solana airdrop` a cada una para que puedan firmar en devnet.
+
+```bash
+SOLANA_RPC_URL=https://api.devnet.solana.com yarn register-merchants:devnet
+```
+
+Re-running the script **no duplica** cuentas: omite merchants ya whitelisteados.
 
 ## Web (Next.js / Vercel)
 

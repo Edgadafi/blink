@@ -10,5 +10,5 @@
     "skipLibCheck": true,
     "strict": false
   },
-  "include": ["tests/**/*.ts", "client/**/*.ts"]
+  "include": ["tests/**/*.ts", "client/**/*.ts", "scripts/**/*.ts"]
 }
