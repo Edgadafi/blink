@@ -1,0 +1,310 @@
+import {
+  ACTIONS_CORS_HEADERS,
+  createPostResponse,
+  type ActionGetResponse,
+  type ActionPostRequest,
+  type ActionPostResponse,
+} from "@solana/actions";
+import { AnchorProvider, Program, type Idl } from "@coral-xyz/anchor";
+import {
+  Connection,
+  Keypair,
+  PublicKey,
+  Transaction,
+  VersionedTransaction,
+  clusterApiUrl,
+  type Cluster,
+} from "@solana/web3.js";
+import {
+  TOKEN_PROGRAM_ID,
+  getAssociatedTokenAddressSync,
+} from "@solana/spl-token";
+
+import idl from "@root/target/idl/remesa_liquidez.json";
+import type { RemesaLiquidez } from "@root/target/types/remesa_liquidez";
+import { findMerchantPda, findVaultPda } from "@root/client";
+
+export const dynamic = "force-dynamic";
+export const runtime = "nodejs";
+
+const ICON_URL =
+  process.env.NEXT_PUBLIC_BLINK_ICON_URL ??
+  "https://images.unsplash.com/photo-1556742031-c6961e8560b0?auto=format&fit=crop&w=1200&q=80";
+
+const TITLE = "Retiro de Efectivo - TIA";
+const DESCRIPTION =
+  "Estás a punto de validar la entrega de efectivo. Asegúrate de haber verificado la identidad del receptor mediante World ID antes de firmar.";
+const LABEL = "Finalizar Entrega";
+
+function getCluster(): Cluster {
+  const raw =
+    process.env.SOLANA_CLUSTER ??
+    process.env.NEXT_PUBLIC_SOLANA_CLUSTER ??
+    "devnet";
+  if (raw === "mainnet-beta" || raw === "testnet" || raw === "devnet") {
+    return raw;
+  }
+  return "devnet";
+}
+
+function getConnection(): Connection {
+  const rpcUrl =
+    process.env.SOLANA_RPC_URL ??
+    process.env.NEXT_PUBLIC_SOLANA_RPC_URL ??
+    clusterApiUrl(getCluster());
+  return new Connection(rpcUrl, "confirmed");
+}
+
+/**
+ * Minimal read-only wallet so we can instantiate AnchorProvider on the server
+ * (we never sign anything here — the merchant signs in their wallet client).
+ */
+function readOnlyWallet() {
+  const kp = Keypair.generate();
+  return {
+    publicKey: kp.publicKey,
+    signTransaction: async <T extends Transaction | VersionedTransaction>(
+      tx: T
+    ): Promise<T> => tx,
+    signAllTransactions: async <T extends Transaction | VersionedTransaction>(
+      txs: T[]
+    ): Promise<T[]> => txs,
+    payer: kp,
+  };
+}
+
+function getProgram(connection: Connection): Program<RemesaLiquidez> {
+  const provider = new AnchorProvider(connection, readOnlyWallet(), {
+    commitment: "confirmed",
+  });
+  return new Program<RemesaLiquidez>(
+    idl as unknown as Idl,
+    provider
+  ) as unknown as Program<RemesaLiquidez>;
+}
+
+function jsonWithCors(body: unknown, init: ResponseInit = {}) {
+  return new Response(JSON.stringify(body), {
+    ...init,
+    headers: {
+      "Content-Type": "application/json",
+      ...ACTIONS_CORS_HEADERS,
+      ...(init.headers ?? {}),
+    },
+  });
+}
+
+export async function OPTIONS() {
+  return new Response(null, { status: 204, headers: ACTIONS_CORS_HEADERS });
+}
+
+export async function GET(req: Request) {
+  const url = new URL(req.url);
+  const pda = url.searchParams.get("pda");
+
+  if (!pda) {
+    const errResponse: ActionGetResponse = {
+      icon: ICON_URL,
+      title: TITLE,
+      label: LABEL,
+      description:
+        "Falta el parámetro 'pda' (TurnReservation). Reescanea el QR del cliente o verifica el enlace de la blink.",
+      disabled: true,
+    };
+    return jsonWithCors(errResponse, { status: 400 });
+  }
+
+  try {
+    new PublicKey(pda);
+  } catch {
+    const errResponse: ActionGetResponse = {
+      icon: ICON_URL,
+      title: TITLE,
+      label: LABEL,
+      description:
+        "El parámetro 'pda' no es una llave pública válida de Solana.",
+      disabled: true,
+    };
+    return jsonWithCors(errResponse, { status: 400 });
+  }
+
+  const response: ActionGetResponse = {
+    icon: ICON_URL,
+    title: TITLE,
+    label: LABEL,
+    description: DESCRIPTION,
+  };
+  return jsonWithCors(response);
+}
+
+export async function POST(req: Request) {
+  try {
+    const url = new URL(req.url);
+    const pda = url.searchParams.get("pda");
+    if (!pda) {
+      return jsonWithCors(
+        { message: "Missing required query parameter: pda" },
+        { status: 400 }
+      );
+    }
+
+    let reservationPda: PublicKey;
+    try {
+      reservationPda = new PublicKey(pda);
+    } catch {
+      return jsonWithCors(
+        { message: "Invalid 'pda' query parameter (not a Solana pubkey)" },
+        { status: 400 }
+      );
+    }
+
+    let body: ActionPostRequest;
+    try {
+      body = (await req.json()) as ActionPostRequest;
+    } catch {
+      return jsonWithCors(
+        { message: "Invalid JSON body. Expected { account: <merchantPubkey> }" },
+        { status: 400 }
+      );
+    }
+
+    if (!body?.account) {
+      return jsonWithCors(
+        { message: "Missing 'account' (merchant pubkey) in body" },
+        { status: 400 }
+      );
+    }
+
+    let merchant: PublicKey;
+    try {
+      merchant = new PublicKey(body.account);
+    } catch {
+      return jsonWithCors(
+        { message: "Invalid 'account' (not a Solana pubkey)" },
+        { status: 400 }
+      );
+    }
+
+    const connection = getConnection();
+    const program = getProgram(connection);
+
+    // Fetch the on-chain reservation. This validates the PDA exists.
+    const reservation = await program.account.turnReservation.fetchNullable(
+      reservationPda
+    );
+    if (!reservation) {
+      return jsonWithCors(
+        {
+          message:
+            "TurnReservation no encontrada en la red. Verifica el PDA y el cluster.",
+        },
+        { status: 404 }
+      );
+    }
+
+    // Status guard mirrors the on-chain check but gives a friendly UX error.
+    const statusKey = Object.keys(reservation.status)[0] ?? "unknown";
+    if (statusKey !== "active") {
+      return jsonWithCors(
+        {
+          message: `La reserva no está activa (estado actual: ${statusKey}).`,
+        },
+        { status: 400 }
+      );
+    }
+
+    if (reservation.expiresAt.toNumber() <= Math.floor(Date.now() / 1000)) {
+      return jsonWithCors(
+        {
+          message:
+            "La reserva ya expiró. El sender puede solicitar un reembolso vía cancel_reservation.",
+        },
+        { status: 400 }
+      );
+    }
+
+    // Lock-on-claim safety: if a merchant is already pre-selected, only that
+    // merchant can validate. Pubkey::default() means "open".
+    const lockedMerchant = reservation.merchant as PublicKey;
+    if (
+      !lockedMerchant.equals(PublicKey.default) &&
+      !lockedMerchant.equals(merchant)
+    ) {
+      return jsonWithCors(
+        {
+          message:
+            "Esta reserva está asignada a otro comerciante. No puedes validarla.",
+        },
+        { status: 403 }
+      );
+    }
+
+    // Whitelist guard: the merchant must have a registered + active MerchantAccount.
+    const [merchantWhitelistPda] = findMerchantPda(program.programId, merchant);
+    const merchantWhitelist =
+      await program.account.merchantAccount.fetchNullable(merchantWhitelistPda);
+    if (!merchantWhitelist) {
+      return jsonWithCors(
+        {
+          message:
+            "El comerciante no está registrado en el whitelist on-chain.",
+        },
+        { status: 403 }
+      );
+    }
+    if (!merchantWhitelist.active) {
+      return jsonWithCors(
+        { message: "El comerciante está deshabilitado actualmente." },
+        { status: 403 }
+      );
+    }
+
+    const merchantTokenAccount = getAssociatedTokenAddressSync(
+      reservation.mint,
+      merchant
+    );
+    const [vaultPda] = findVaultPda(program.programId, reservationPda);
+
+    const ix = await program.methods
+      .validateCashout()
+      .accountsStrict({
+        receiver: reservation.receiver,
+        merchant,
+        merchantWhitelist: merchantWhitelistPda,
+        reservation: reservationPda,
+        mint: reservation.mint,
+        vault: vaultPda,
+        merchantTokenAccount,
+        tokenProgram: TOKEN_PROGRAM_ID,
+      })
+      .instruction();
+
+    const { blockhash, lastValidBlockHeight } =
+      await connection.getLatestBlockhash("confirmed");
+
+    const tx = new Transaction({
+      feePayer: merchant,
+      blockhash,
+      lastValidBlockHeight,
+    });
+    tx.add(ix);
+
+    // NOTE: validate_cashout requires BOTH the receiver AND the merchant to
+    // sign. The Blink only collects the connected wallet's (merchant)
+    // signature; the receiver's signature must be added by the client app
+    // (e.g., the World ID Mini App) before the transaction is broadcast.
+    const payload: ActionPostResponse = await createPostResponse({
+      fields: {
+        type: "transaction",
+        transaction: tx,
+        message: `Validar entrega de efectivo por ${reservation.amount.toString()} unidades. Recuerda: esta transacción también requiere la firma del receptor verificado vía World ID antes de enviarse.`,
+      },
+    });
+
+    return jsonWithCors(payload);
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : "Unknown error";
+    console.error("[POST /api/actions/cashout] error:", err);
+    return jsonWithCors({ message }, { status: 500 });
+  }
+}
