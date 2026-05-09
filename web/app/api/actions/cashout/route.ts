@@ -223,6 +223,18 @@ export async function POST(req: Request) {
       );
     }
 
+    // World ID gate: the sender must have flipped `is_verified` via
+    // mark_verified before the receiver shows up at the merchant.
+    if (!reservation.isVerified) {
+      return jsonWithCors(
+        {
+          message:
+            "El receptor aún no ha completado la verificación de humanidad (World ID). Pídele que complete la verificación en la app antes de cobrar.",
+        },
+        { status: 412 }
+      );
+    }
+
     // Lock-on-claim safety: if a merchant is already pre-selected, only that
     // merchant can validate. Pubkey::default() means "open".
     const lockedMerchant = reservation.merchant as PublicKey;
@@ -268,7 +280,6 @@ export async function POST(req: Request) {
     const ix = await program.methods
       .validateCashout()
       .accountsStrict({
-        receiver: reservation.receiver,
         merchant,
         merchantWhitelist: merchantWhitelistPda,
         reservation: reservationPda,
@@ -289,15 +300,14 @@ export async function POST(req: Request) {
     });
     tx.add(ix);
 
-    // NOTE: validate_cashout requires BOTH the receiver AND the merchant to
-    // sign. The Blink only collects the connected wallet's (merchant)
-    // signature; the receiver's signature must be added by the client app
-    // (e.g., the World ID Mini App) before the transaction is broadcast.
+    // Single-signer: the merchant is the sole required signature. World ID
+    // verification was already recorded on-chain via `mark_verified` (gated
+    // above by `reservation.isVerified`).
     const payload: ActionPostResponse = await createPostResponse({
       fields: {
         type: "transaction",
         transaction: tx,
-        message: `Validar entrega de efectivo por ${reservation.amount.toString()} unidades. Recuerda: esta transacción también requiere la firma del receptor verificado vía World ID antes de enviarse.`,
+        message: `Validar entrega de efectivo por ${reservation.amount.toString()} unidades al receptor verificado (World ID).`,
       },
     });
 

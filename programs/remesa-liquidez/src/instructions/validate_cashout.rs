@@ -6,10 +6,10 @@ use crate::state::{MerchantAccount, ReservationStatus, TurnReservation};
 
 #[derive(Accounts)]
 pub struct ValidateCashout<'info> {
-    /// World-ID-bound recipient. Must co-sign to authorize the cash-out.
-    pub receiver: Signer<'info>,
-
-    /// Merchant providing physical liquidity. Must co-sign.
+    /// Merchant providing physical liquidity. Sole signer of the cash-out.
+    /// The receiver no longer signs at the point of sale; off-chain World ID
+    /// verification was already recorded via `mark_verified` and is enforced
+    /// by the `is_verified` flag on the reservation.
     #[account(mut)]
     pub merchant: Signer<'info>,
 
@@ -24,7 +24,6 @@ pub struct ValidateCashout<'info> {
         mut,
         seeds = [TurnReservation::SEED_PREFIX, reservation.receiver.as_ref()],
         bump = reservation.bump,
-        has_one = receiver @ ErrorCode::ReceiverMismatch,
         has_one = mint @ ErrorCode::MintMismatch,
     )]
     pub reservation: Account<'info, TurnReservation>,
@@ -68,6 +67,7 @@ pub fn handler(ctx: Context<ValidateCashout>) -> Result<()> {
             clock.unix_timestamp < reservation.expires_at,
             ErrorCode::ReservationExpired
         );
+        require!(reservation.is_verified, ErrorCode::ReceiverNotVerified);
 
         if reservation.merchant != Pubkey::default() {
             require_keys_eq!(

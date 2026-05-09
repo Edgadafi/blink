@@ -101,7 +101,6 @@ export async function buildValidateCashoutIx(
   return args.program.methods
     .validateCashout()
     .accountsStrict({
-      receiver: args.receiver,
       merchant: args.merchant,
       merchantWhitelist,
       reservation,
@@ -109,6 +108,25 @@ export async function buildValidateCashoutIx(
       vault,
       merchantTokenAccount: args.merchantTokenAccount,
       tokenProgram: TOKEN_PROGRAM_ID,
+    })
+    .instruction();
+}
+
+export interface MarkVerifiedArgs {
+  program: RemesaProgram;
+  sender: PublicKey;
+  receiver: PublicKey;
+}
+
+export async function buildMarkVerifiedIx(
+  args: MarkVerifiedArgs
+): Promise<TransactionInstruction> {
+  const [reservation] = findReservationPda(args.program.programId, args.receiver);
+  return args.program.methods
+    .markVerified()
+    .accountsStrict({
+      sender: args.sender,
+      reservation,
     })
     .instruction();
 }

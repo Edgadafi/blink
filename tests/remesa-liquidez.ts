@@ -20,6 +20,7 @@ import { RemesaLiquidez } from "../target/types/remesa_liquidez";
 import {
   buildCancelReservationIx,
   buildInitializeReservationIx,
+  buildMarkVerifiedIx,
   buildRegisterMerchantIx,
   buildSetMerchantStatusIx,
   buildValidateCashoutIx,
@@ -101,9 +102,19 @@ describe("remesa-liquidez", () => {
     return amount;
   }
 
-  it("happy path: initialize + validate_cashout transfers tokens to merchant", async () => {
+  async function markVerified(s: Awaited<ReturnType<typeof setup>>) {
+    const ix = await buildMarkVerifiedIx({
+      program,
+      sender: s.sender.publicKey,
+      receiver: s.receiver.publicKey,
+    });
+    await provider.sendAndConfirm(new Transaction().add(ix), [s.sender]);
+  }
+
+  it("happy path: mark_verified + merchant-only validate_cashout transfers tokens", async () => {
     const s = await setup();
     const amount = await initialize(s);
+    await markVerified(s);
 
     const ix = await buildValidateCashoutIx({
       program,
@@ -113,7 +124,7 @@ describe("remesa-liquidez", () => {
       merchantTokenAccount: s.merchantAta,
     });
     const tx = new Transaction().add(ix);
-    await provider.sendAndConfirm(tx, [s.receiver, s.merchant]);
+    await provider.sendAndConfirm(tx, [s.merchant]);
 
     const merchantBal = await getAccount(connection, s.merchantAta);
     expect(Number(merchantBal.amount)).to.equal(amount);
@@ -122,9 +133,10 @@ describe("remesa-liquidez", () => {
     const reservation = await program.account.turnReservation.fetch(reservationPda);
     expect(JSON.stringify(reservation.status)).to.contain("completed");
     expect(reservation.merchant.toBase58()).to.equal(s.merchant.publicKey.toBase58());
+    expect(reservation.isVerified).to.equal(true);
   });
 
-  it("ReservationNotActive after a successful cashout", async () => {
+  it("ReceiverNotVerified: cashout fails if mark_verified was never called", async () => {
     const s = await setup();
     await initialize(s);
 
@@ -135,10 +147,68 @@ describe("remesa-liquidez", () => {
       mint: s.mint,
       merchantTokenAccount: s.merchantAta,
     });
-    await provider.sendAndConfirm(new Transaction().add(ix), [s.receiver, s.merchant]);
+    try {
+      await provider.sendAndConfirm(new Transaction().add(ix), [s.merchant]);
+      expect.fail("expected ReceiverNotVerified");
+    } catch (e: any) {
+      expect(e.toString()).to.match(/ReceiverNotVerified|humanity verification/i);
+    }
+  });
+
+  it("AlreadyVerified: mark_verified is idempotent (second call errors)", async () => {
+    const s = await setup();
+    await initialize(s);
+    await markVerified(s);
+
+    const ix = await buildMarkVerifiedIx({
+      program,
+      sender: s.sender.publicKey,
+      receiver: s.receiver.publicKey,
+    });
+    try {
+      await provider.sendAndConfirm(new Transaction().add(ix), [s.sender]);
+      expect.fail("expected AlreadyVerified");
+    } catch (e: any) {
+      expect(e.toString()).to.match(/AlreadyVerified|already been marked/i);
+    }
+  });
+
+  it("mark_verified requires the original sender (SenderMismatch otherwise)", async () => {
+    const s = await setup();
+    await initialize(s);
+
+    const intruder = Keypair.generate();
+    await airdrop(intruder.publicKey);
+
+    const ix = await buildMarkVerifiedIx({
+      program,
+      sender: intruder.publicKey,
+      receiver: s.receiver.publicKey,
+    });
+    try {
+      await provider.sendAndConfirm(new Transaction().add(ix), [intruder]);
+      expect.fail("expected SenderMismatch / has_one violation");
+    } catch (e: any) {
+      expect(e.toString()).to.match(/SenderMismatch|ConstraintHasOne|has[_ ]one/i);
+    }
+  });
+
+  it("ReservationNotActive after a successful cashout", async () => {
+    const s = await setup();
+    await initialize(s);
+    await markVerified(s);
+
+    const ix = await buildValidateCashoutIx({
+      program,
+      receiver: s.receiver.publicKey,
+      merchant: s.merchant.publicKey,
+      mint: s.mint,
+      merchantTokenAccount: s.merchantAta,
+    });
+    await provider.sendAndConfirm(new Transaction().add(ix), [s.merchant]);
 
     try {
-      await provider.sendAndConfirm(new Transaction().add(ix), [s.receiver, s.merchant]);
+      await provider.sendAndConfirm(new Transaction().add(ix), [s.merchant]);
       expect.fail("expected ReservationNotActive");
     } catch (e: any) {
       expect(e.toString()).to.match(/ReservationNotActive|not in Active/i);
@@ -148,6 +218,7 @@ describe("remesa-liquidez", () => {
   it("ReservationExpired when expiry has passed", async () => {
     const s = await setup();
     await initialize(s, 50_000_000, 1);
+    await markVerified(s);
 
     await sleep(2500);
 
@@ -159,7 +230,7 @@ describe("remesa-liquidez", () => {
       merchantTokenAccount: s.merchantAta,
     });
     try {
-      await provider.sendAndConfirm(new Transaction().add(ix), [s.receiver, s.merchant]);
+      await provider.sendAndConfirm(new Transaction().add(ix), [s.merchant]);
       expect.fail("expected ReservationExpired");
     } catch (e: any) {
       expect(e.toString()).to.match(/ReservationExpired|already expired/i);
@@ -243,6 +314,7 @@ describe("remesa-liquidez", () => {
   it("InvalidMerchant: cashout fails when merchant is not whitelisted", async () => {
     const s = await setup({ mintMerchant: false });
     await initialize(s);
+    await markVerified(s);
 
     const ix = await buildValidateCashoutIx({
       program,
@@ -252,7 +324,7 @@ describe("remesa-liquidez", () => {
       merchantTokenAccount: s.merchantAta,
     });
     try {
-      await provider.sendAndConfirm(new Transaction().add(ix), [s.receiver, s.merchant]);
+      await provider.sendAndConfirm(new Transaction().add(ix), [s.merchant]);
       expect.fail("expected AccountNotInitialized for whitelist or InvalidMerchant");
     } catch (e: any) {
       expect(e.toString()).to.match(/AccountNotInitialized|InvalidMerchant/i);
@@ -262,6 +334,7 @@ describe("remesa-liquidez", () => {
   it("InvalidMerchant: deactivated whitelist entry blocks cashout", async () => {
     const s = await setup();
     await initialize(s);
+    await markVerified(s);
 
     const offIx = await buildSetMerchantStatusIx({
       program,
@@ -279,7 +352,7 @@ describe("remesa-liquidez", () => {
       merchantTokenAccount: s.merchantAta,
     });
     try {
-      await provider.sendAndConfirm(new Transaction().add(ix), [s.receiver, s.merchant]);
+      await provider.sendAndConfirm(new Transaction().add(ix), [s.merchant]);
       expect.fail("expected InvalidMerchant");
     } catch (e: any) {
       expect(e.toString()).to.match(/InvalidMerchant/i);
@@ -305,6 +378,7 @@ describe("remesa-liquidez", () => {
     await provider.sendAndConfirm(new Transaction().add(reg), [admin]);
 
     await initialize(s, 100_000_000, 60, s.merchant.publicKey);
+    await markVerified(s);
 
     const ix = await buildValidateCashoutIx({
       program,
@@ -314,7 +388,7 @@ describe("remesa-liquidez", () => {
       merchantTokenAccount: otherAta.address,
     });
     try {
-      await provider.sendAndConfirm(new Transaction().add(ix), [s.receiver, otherMerchant]);
+      await provider.sendAndConfirm(new Transaction().add(ix), [otherMerchant]);
       expect.fail("expected InvalidMerchant");
     } catch (e: any) {
       expect(e.toString()).to.match(/InvalidMerchant/i);

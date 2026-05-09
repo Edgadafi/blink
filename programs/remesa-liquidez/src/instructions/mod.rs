@@ -1,5 +1,6 @@
 pub mod cancel_reservation;
 pub mod initialize_reservation;
+pub mod mark_verified;
 pub mod register_merchant;
 pub mod validate_cashout;
 
@@ -7,6 +8,7 @@ pub mod validate_cashout;
 mod re_exports {
     pub use super::cancel_reservation::*;
     pub use super::initialize_reservation::*;
+    pub use super::mark_verified::*;
     pub use super::register_merchant::*;
     pub use super::validate_cashout::*;
 }

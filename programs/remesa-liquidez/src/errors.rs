@@ -24,4 +24,8 @@ pub enum ErrorCode {
     MintMismatch,
     #[msg("Numeric overflow")]
     NumericOverflow,
+    #[msg("Receiver has not completed off-chain humanity verification (World ID)")]
+    ReceiverNotVerified,
+    #[msg("Reservation has already been marked as verified")]
+    AlreadyVerified,
 }

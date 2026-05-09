@@ -29,8 +29,17 @@ pub mod remesa_liquidez {
         )
     }
 
-    /// Co-signed (receiver + merchant) settlement that releases the vault
-    /// tokens to a whitelisted merchant after physical cash delivery.
+    /// Records that the receiver has completed off-chain humanity verification
+    /// (World ID). Signed by the sender — whose backend integrates with the
+    /// World ID API and is therefore the trust anchor for the proof. Once
+    /// flipped, `validate_cashout` no longer requires the receiver's signature.
+    pub fn mark_verified(ctx: Context<MarkVerified>) -> Result<()> {
+        instructions::mark_verified::handler(ctx)
+    }
+
+    /// Merchant-only settlement that releases the vault tokens to a whitelisted
+    /// merchant. Requires `is_verified == true` (set by `mark_verified`) so the
+    /// receiver does not need to sign at the point of sale.
     pub fn validate_cashout(ctx: Context<ValidateCashout>) -> Result<()> {
         instructions::validate_cashout::handler(ctx)
     }

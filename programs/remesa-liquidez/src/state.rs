@@ -29,6 +29,11 @@ pub struct TurnReservation {
     pub amount: u64,
     /// Unix timestamp after which the sender may cancel.
     pub expires_at: i64,
+    /// Off-chain humanity verification flag (e.g. World ID). When true, the
+    /// receiver no longer needs to sign at the merchant's point of sale.
+    /// Flipped by `mark_verified` after the sender's backend validates the
+    /// World ID proof.
+    pub is_verified: bool,
     /// Lifecycle status.
     pub status: ReservationStatus,
     /// Bump for the reservation PDA.
@@ -38,9 +43,9 @@ pub struct TurnReservation {
 }
 
 impl TurnReservation {
-    /// 8 (disc) + 32*4 (pubkeys) + 8 (amount) + 8 (expires_at) + 1 (status)
-    /// + 1 (bump) + 1 (vault_bump).
-    pub const SPACE: usize = 8 + 32 * 4 + 8 + 8 + 1 + 1 + 1;
+    /// 8 (disc) + 32*4 (pubkeys) + 8 (amount) + 8 (expires_at)
+    /// + 1 (is_verified) + 1 (status) + 1 (bump) + 1 (vault_bump).
+    pub const SPACE: usize = 8 + 32 * 4 + 8 + 8 + 1 + 1 + 1 + 1;
 
     pub const SEED_PREFIX: &'static [u8] = b"reservation";
     pub const VAULT_SEED_PREFIX: &'static [u8] = b"vault";

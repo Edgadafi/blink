@@ -68,6 +68,7 @@ pub fn handler(
     reservation.mint = ctx.accounts.mint.key();
     reservation.amount = amount;
     reservation.expires_at = expires_at;
+    reservation.is_verified = false;
     reservation.status = ReservationStatus::Active;
     reservation.bump = ctx.bumps.reservation;
     reservation.vault_bump = ctx.bumps.vault;
