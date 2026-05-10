@@ -20,18 +20,18 @@ En remesas y pagos locales de LATAM, tres cosas fallan sistemáticamente:
 
 ```mermaid
 flowchart LR
-  EVM["EVM Wallet\n(Arbitrum/Base/Polygon)"] -->|"GET /api/bridge/quote"| LIFI["LI.FI SDK\n(cross-chain bridge)"]
-  LIFI -->|"USDC SPL → Solana"| SenderWallet["Sender Wallet\n(Solana)"]
-  SenderWallet -->|"MWA / wallet-adapter\ninitialize_reservation"| Escrow["Escrow\n(TurnReservation PDA)"]
-  WorldID["World ID\nMiniApp"] -->|"POST /api/lidia/notify"| Render["LidIA\n(Render)"]
-  Render -->|"mark_verified tx"| Escrow
-  Escrow -->|"trigger"| NotifyAPI["POST /api/notify/verified"]
-  NotifyAPI -->|"TTS audio"| ElevenLabs["ElevenLabs\n(eleven_multilingual_v2)"]
-  ElevenLabs -->|"base64 mp3"| Render
-  Render -->|"WhatsApp audio"| Receiver["Receiver 📱"]
-  Merchant -->|"validate_cashout\nBlink"| Escrow
-  Escrow -->|"99.75% payout"| MerchantATA["Merchant ATA"]
-  Escrow -->|"0.25% fee"| Treasury["Treasury Vault\n(PDA)"]
+  EVM[EVM Wallet] -->|GET /api/bridge/quote| LIFI[LI.FI SDK]
+  LIFI -->|USDC SPL a Solana| SenderWallet[Sender Wallet]
+  SenderWallet -->|initialize_reservation| Escrow[Escrow PDA]
+  WorldID[World ID] -->|POST /api/lidia/notify| Render[LidIA en Render]
+  Render -->|mark_verified tx| Escrow
+  Escrow -->|trigger| NotifyAPI[POST /api/notify/verified]
+  NotifyAPI -->|TTS audio| ElevenLabs[ElevenLabs]
+  ElevenLabs -->|base64 mp3| Render
+  Render -->|WhatsApp audio| Receiver[Receiver]
+  Merchant -->|validate_cashout Blink| Escrow
+  Escrow -->|99.75% payout| MerchantATA[Merchant ATA]
+  Escrow -->|0.25% fee| Treasury[Treasury Vault]
 ```
 
 1. **Sender** bloquea SPL tokens en un vault PDA con `initialize_reservation`.
