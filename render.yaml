@@ -1,0 +1,105 @@
+# Render - https://render.com
+# ─────────────────────────────────────────────────────────
+# Remesa Blink — render.yaml completo (Hackathon)
+# Servicios: backend + bot WhatsApp
+# Base de datos: PostgreSQL gestionada por Render
+# ─────────────────────────────────────────────────────────
+
+services:
+
+  # ── 1. Backend principal (API + Blinks + Keeper + LidIA) ──────────────────
+  - type: web
+    name: remesa-blink-backend
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    region: oregon
+    plan: free
+    healthCheckPath: /health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: 3000
+
+      # URLs públicas — pegar después del primer deploy
+      - key: BASE_URL
+        sync: false          # https://remesa-blink-backend.onrender.com
+      - key: BLINKS_BASE_URL
+        sync: false          # mismo que BASE_URL
+
+      # Base de datos
+      - key: DATABASE_URL
+        fromDatabase:
+          name: remesa-blink-db
+          property: connectionString
+
+      # Solana
+      - key: SOLANA_RPC_URL
+        value: https://api.devnet.solana.com
+      - key: PROGRAM_ID
+        value: B1G72CcRGHYc1UpG4o51VrJySLiwm3d7tCHbQiSb5vZ2
+      - key: KEEPER_PRIVATE_KEY
+        sync: false          # ← pegar en Render Dashboard
+
+      # Keeper cron (corre dentro del mismo proceso)
+      - key: RUN_KEEPER
+        value: "true"
+
+      # Etherfuse (USDC → MXN SPEI)
+      - key: ETHERFUSE_API_URL
+        value: https://api.sand.etherfuse.com
+      - key: ETHERFUSE_API_KEY
+        sync: false
+      - key: ETHERFUSE_WEBHOOK_SECRET
+        sync: false
+
+      # ── LidIA + ElevenLabs ───────────────────────────────
+      - key: ELEVENLABS_API_KEY
+        sync: false          # ← pegar en Render Dashboard
+      - key: ELEVENLABS_VOICE_ID
+        value: EXAVITQu4vr4xnSDxMaL   # Sarah (español)
+      - key: LIDIA_USE_VOICE
+        value: "true"
+
+      # ── cNFT Metaplex Bubblegum ──────────────────────────
+      - key: MERKLE_TREE_ADDRESS
+        sync: false          # ← pegar después de createMerkleTree()
+
+      # ── World ID ─────────────────────────────────────────
+      - key: WORLD_ID_APP_ID
+        value: app_staging_remesa_blink
+      - key: WORLD_ID_ACTION
+        value: retiro-efectivo
+
+      # ── Bot WhatsApp (comunicación interna) ──────────────
+      - key: BOT_INTERNAL_URL
+        sync: false          # https://remesa-blink-bot.onrender.com
+      - key: BOT_INTERNAL_SECRET
+        sync: false          # ← mismo valor que el bot
+
+  # ── 2. Bot WhatsApp (Baileys) ──────────────────────────────────────────────
+  - type: web
+    name: remesa-blink-bot
+    runtime: docker
+    dockerfilePath: ./Dockerfile.bot
+    region: oregon
+    plan: free
+    # NOTA: sin disco persistente (plan free) — si Render reinicia el contenedor
+    # hay que re-escanear el QR de WhatsApp. Suficiente para hackathon.
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: BOT_INTERNAL_PORT
+        value: 3002
+      - key: BOT_INTERNAL_SECRET
+        sync: false
+      - key: API_BASE_URL
+        sync: false          # https://remesa-blink-backend.onrender.com
+
+# ── Base de datos PostgreSQL gestionada ───────────────────────────────────────
+databases:
+  - name: remesa-blink-db
+    databaseName: remesa_blink
+    plan: free
+    region: oregon
+
