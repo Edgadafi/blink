@@ -225,6 +225,9 @@ export default function Home() {
           <pre style={{ ...codeBlock, marginTop: 12 }}>
             {`GET /api/actions/verify?pda=<reservationPda>`}
           </pre>
+          <pre style={{ ...codeBlock, marginTop: 12 }}>
+            {`POST /api/notify/verified\n{ "reservationPda": "<pda>", "receiverWA": "521234567890" }\n# → TTS ElevenLabs + WhatsApp "dinero listo" vía LidIA`}
+          </pre>
         </div>
 
         <div
